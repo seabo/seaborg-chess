@@ -34,24 +34,31 @@ fi
 echo "=== GPU ==="; nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 echo "=== disk ==="; df -h . | tail -1
 
-# --- 1. venv + deps (idempotent) ---
+# --- 1. venv + deps ---
+echo; echo "[$(date +%T)] === [1/3] venv + deps — installing torch (~1GB) etc., ~3-5 min, output below ==="
 [ -d venv ] || python3 -m venv venv
 source venv/bin/activate
-pip install --upgrade pip -q
-pip install -q -r requirements-cloud.txt
+pip install --upgrade pip
+pip install -r requirements-cloud.txt
 python -c "import torch; print('torch', torch.__version__, '| cuda', torch.cuda.is_available(), torch.version.cuda)"
 
 # --- 2. data: raw Lichess set -> action-values (skipped if already built) ---
 if [ -z "$(ls -A "$DATA_DIR" 2>/dev/null || true)" ]; then
   if [ ! -d "$RAW_DIR/data" ]; then
-    echo "=== downloading raw dataset (~41 GB) ==="
+    [ -n "${HF_TOKEN:-}" ] && echo "HF_TOKEN detected" || echo "no HF_TOKEN — anonymous public download (fine, just rate-limited)"
+    echo "[$(date +%T)] === [2/3] downloading raw Lichess dataset (~41 GB) -> $RAW_DIR (progress below) ==="
     hf download Lichess/chess-position-evaluations --repo-type dataset --local-dir "$RAW_DIR"
+    echo "[$(date +%T)] download complete ($(du -sh "$RAW_DIR" 2>/dev/null | cut -f1))"
+  else
+    echo "raw dataset already at $RAW_DIR — skipping download"
   fi
-  echo "=== building action-values dataset (~5-15 min) ==="
+  echo "[$(date +%T)] === building action-values dataset -> $DATA_DIR (~5-15 min) ==="
   python build_action_values.py --src "$RAW_DIR" --out "$DATA_DIR"
 else
-  echo "$DATA_DIR already present — skipping data build"
+  echo "$DATA_DIR already present — skipping download + build"
 fi
+
+echo "[$(date +%T)] === [3/3] launching training in tmux ==="
 
 # --- 3. launch training in tmux ---
 LOG=train_cf100m.log
