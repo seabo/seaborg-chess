@@ -239,6 +239,7 @@ def main():
     # stall on every step (which would stop the CPU queuing the next step's kernels)
     running = {k: torch.zeros((), device=device) for k in ("loss", "policy", "wdl", "value", "acc")}
     log_n = 0
+    n_skipped = 0  # optimizer steps skipped due to non-finite gradients
 
     for step in range(start_step, args.steps):
         opt.zero_grad(set_to_none=True)
@@ -257,14 +258,20 @@ def main():
             log_n += 1
 
         scaler.unscale_(opt)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-        prev_scale = scaler.get_scale()
-        scaler.step(opt)
-        scaler.update()
-        # only advance the LR schedule if the optimizer actually stepped (the scaler
-        # skips the step when it detects inf/nan grads, which lowers the loss scale)
-        if scaler.get_scale() >= prev_scale:
-            sched.step()
+        gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+        if torch.isfinite(gnorm):
+            prev_scale = scaler.get_scale()
+            scaler.step(opt)
+            scaler.update()
+            # advance LR only if the optimizer actually stepped (fp16 scaler skips on inf)
+            if scaler.get_scale() >= prev_scale:
+                sched.step()
+        else:
+            # non-finite gradients: under bf16 there's no GradScaler to catch these, so
+            # skip the update — one bad step can't be allowed to corrupt the weights
+            scaler.update()
+            n_skipped += 1
+            print(f"  [warn] step {step}: non-finite grad norm, step skipped (total skipped {n_skipped})", flush=True)
 
         if step % args.log_interval == 0 and log_n > 0:
             dt = time.time() - t0

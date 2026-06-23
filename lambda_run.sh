@@ -13,7 +13,9 @@ cd "$(dirname "$0")"
 
 STEPS=${STEPS:-200000}      # ~0.5 epoch ceiling; WATCH val acc and stop early once it plateaus
 BATCH=${BATCH:-1024}        # H100/80GB; drop to 512 if the attention transient OOMs
-LR=${LR:-6e-4}
+LR=${LR:-3e-4}              # conservative for a 100M from-scratch run (5e-4 diverged)
+CLIP=${CLIP:-1.0}           # tight gradient clipping for stability
+WARMUP=${WARMUP:-3000}
 WORKERS=${WORKERS:-16}
 # Set CF_FS to a mounted Lambda Filesystem (e.g. CF_FS=/home/ubuntu/<fs-name>) to keep the
 # dataset AND checkpoints on persistent storage — they survive instance termination, and a
@@ -75,8 +77,8 @@ TERM=xterm-256color tmux new-session -d -s train "source venv/bin/activate && \
     --precision bf16 --compile \
     --data-dir $DATA_DIR --val-mode column \
     --out-dir $OUT_DIR \
-    --batch-size $BATCH --num-workers $WORKERS --steps $STEPS --save-interval 2000 \
-    --lr $LR --warmup 2000 --policy-temp 0.1 2>&1 | tee $LOG"
+    --batch-size $BATCH --num-workers $WORKERS --steps $STEPS --save-interval 1000 \
+    --lr $LR --warmup $WARMUP --grad-clip $CLIP --policy-temp 0.1 2>&1 | tee $LOG"
 
 cat <<EOF
 
