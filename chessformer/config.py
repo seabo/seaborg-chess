@@ -39,6 +39,11 @@ class ChessFormerConfig:
     # --- relative position encoding ---
     use_rel_value: bool = True  # apply Shaw relative encoding to the value path (a^V) too
 
+    # --- normalization style ---
+    # "post": post-LN + DeepNorm (paper-faithful; fragile to train very deep from scratch)
+    # "pre":  pre-LN + GPT-2 scaled-residual init (robust deep-from-scratch training)
+    norm: str = "post"
+
     def __post_init__(self):
         assert self.n_embd % self.n_head == 0, "n_embd must be divisible by n_head"
 
@@ -49,7 +54,7 @@ class ChessFormerConfig:
     def describe(self) -> str:
         return (
             f"ChessFormer(layers={self.n_layer}, d={self.n_embd}, heads={self.n_head}, "
-            f"d_ff={self.d_ff}, head_dim={self.head_dim})"
+            f"d_ff={self.d_ff}, head_dim={self.head_dim}, norm={self.norm})"
         )
 
 
@@ -65,7 +70,7 @@ CF_22M = ChessFormerConfig(n_layer=12, n_embd=384, n_head=12, d_ff=1536, value_h
 MLP_7M = ChessFormerConfig(n_layer=4, n_embd=384, n_head=8, d_ff=1536, value_hidden=384)
 
 # ~100M scaling probe for the cloud (1x H100). Same proportions: head_dim=32, 4x FFN.
-CF_100M = ChessFormerConfig(n_layer=14, n_embd=768, n_head=24, d_ff=3072, value_hidden=768)
+CF_100M = ChessFormerConfig(n_layer=14, n_embd=768, n_head=24, d_ff=3072, value_hidden=768, norm="pre")
 
 # Tiny preset for fast pipeline smoke-tests.
 CF_TINY = ChessFormerConfig(n_layer=2, n_embd=64, n_head=4, d_ff=64, value_hidden=64)

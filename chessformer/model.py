@@ -121,14 +121,21 @@ class EncoderBlock(nn.Module):
     def __init__(self, config: ChessFormerConfig, alpha: float):
         super().__init__()
         self.alpha = alpha
+        self.pre = getattr(config, "norm", "post") == "pre"
         self.attn = RelativeAttention(config)
         self.norm1 = RMSNorm(config.n_embd)
         self.ff = FeedForward(config)
         self.norm2 = RMSNorm(config.n_embd)
 
     def forward(self, x):
-        x = self.norm1(self.alpha * x + self.attn(x))
-        x = self.norm2(self.alpha * x + self.ff(x))
+        if self.pre:
+            # pre-LN: normalize *into* each sublayer; clean residual path -> stable deep training
+            x = x + self.attn(self.norm1(x))
+            x = x + self.ff(self.norm2(x))
+        else:
+            # post-LN + DeepNorm residual scaling (paper-faithful; fragile when very deep)
+            x = self.norm1(self.alpha * x + self.attn(x))
+            x = self.norm2(self.alpha * x + self.ff(x))
         return x
 
 
@@ -183,7 +190,8 @@ class ChessFormer(nn.Module):
         self.tok_offset = nn.Parameter(torch.zeros(N_SQUARES, config.n_embd))
         self.embed_drop = nn.Dropout(config.dropout)
 
-        alpha = (2.0 * config.n_layer) ** 0.25
+        is_pre = getattr(config, "norm", "post") == "pre"
+        alpha = 1.0 if is_pre else (2.0 * config.n_layer) ** 0.25
         self.blocks = nn.ModuleList([EncoderBlock(config, alpha) for _ in range(config.n_layer)])
         self.norm_f = RMSNorm(config.n_embd)
 
@@ -191,7 +199,7 @@ class ChessFormer(nn.Module):
         self.value_head = ValueHead(config)
 
         self.apply(self._base_init)
-        self._apply_deepnorm_init()
+        self._apply_prenorm_init() if is_pre else self._apply_deepnorm_init()
 
     # --- initialization ---
     def _base_init(self, module):
@@ -205,6 +213,14 @@ class ChessFormer(nn.Module):
         for block in self.blocks:
             for lin in (block.attn.v_proj, block.attn.out_proj, block.ff.fc1, block.ff.fc2):
                 nn.init.xavier_normal_(lin.weight, gain=beta)
+
+    def _apply_prenorm_init(self):
+        # GPT-2 style: shrink each residual branch's output projection by 1/sqrt(2N) so the
+        # residual stream variance doesn't grow with depth -> stable deep pre-LN training
+        scale = (2.0 * self.config.n_layer) ** -0.5
+        for block in self.blocks:
+            for lin in (block.attn.out_proj, block.ff.fc2):
+                lin.weight.data.mul_(scale)
 
     # --- forward ---
     def forward(self, features, legal_mask=None):
