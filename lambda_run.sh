@@ -34,10 +34,17 @@ fi
 echo "=== GPU ==="; nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 echo "=== disk ==="; df -h . | tail -1
 
-# --- 1. venv + deps ---
-echo; echo "[$(date +%T)] === [1/3] venv + deps — installing torch (~1GB) etc., ~3-5 min, output below ==="
-[ -d venv ] || python3 -m venv venv
+# --- 1. env + deps ---
+echo; echo "[$(date +%T)] === [1/3] env + deps ==="
+# --system-site-packages inherits Lambda Stack's preinstalled torch+CUDA, so pip sees torch
+# already satisfied and skips the ~1GB re-download — only the light deps get fetched.
+[ -d venv ] || python3 -m venv venv --system-site-packages
 source venv/bin/activate
+if python -c "import torch" 2>/dev/null; then
+  echo "torch present system-wide (Lambda Stack) -> skipping re-download; installing light deps only"
+else
+  echo "no system torch -> pip will install it (~1GB, a few minutes)"
+fi
 pip install --upgrade pip
 pip install -r requirements-cloud.txt
 python -c "import torch; print('torch', torch.__version__, '| cuda', torch.cuda.is_available(), torch.version.cuda)"
