@@ -1,0 +1,7 @@
+torch
+chess
+datasets
+pyarrow
+duckdb
+huggingface_hub
+numpy

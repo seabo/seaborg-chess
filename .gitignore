@@ -1,0 +1,18 @@
+# Python env / caches
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# datasets (downloaded + generated)
+data/
+# model checkpoints
+checkpoints/
+# cloned third-party bridge (has your token in config.yml — never commit)
+lichess-bot/
+# downloaded Stockfish binary
+tools/
+
+# artifacts
+*.pt
+*.log
