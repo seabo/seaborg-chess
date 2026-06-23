@@ -85,7 +85,7 @@ class ChessFormerEngine:
     @torch.no_grad()
     def select_move(self, board: chess.Board, mode: str = "policy",
                     temperature: float = 0.0, depth: int = 3, width: int = 4,
-                    qdepth: int = 4) -> dict:
+                    qdepth: int = 6) -> dict:
         if not list(board.legal_moves):
             return {"move": None, "cp": None, "info": "no legal moves"}
         if mode == "value":
@@ -207,6 +207,14 @@ class ChessFormerEngine:
             return -1.0                       # side to move is mated
         if not any(board.legal_moves) or board.is_insufficient_material():
             return 0.0                        # stalemate / dead draw
+        # Repetition / 50-move are invisible to the value head (FEN carries no history), so
+        # the search must inject them or the engine shuffles won positions into a threefold.
+        # is_repetition(2) scores the FIRST repetition in-tree as a draw (strong engines do
+        # this): when winning, q>0 beats a 0 draw so it steers away; when losing, 0 beats q<0
+        # so it steers toward it. Every _negamax node is >=1 ply below the root, so the root
+        # (which may itself already be a twofold) is never wrongly flagged.
+        if board.is_repetition(2) or board.halfmove_clock >= 100:
+            return 0.0
         if depth <= 0:
             return self._qsearch(board, alpha, beta, qdepth)   # leaf -> quiescence
         policy_logits, _, _ = self._forward([board], with_mask=True)

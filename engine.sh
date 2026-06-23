@@ -15,6 +15,6 @@ exec venv/bin/python uci.py \
     --mode "${CF_MODE:-search}" \
     --search-depth "${CF_DEPTH:-3}" \
     --search-width "${CF_WIDTH:-4}" \
-    --search-qdepth "${CF_QDEPTH:-4}" \
+    --search-qdepth "${CF_QDEPTH:-6}" \
     --device "${CF_DEVICE:-cpu}" \
     "$@"
