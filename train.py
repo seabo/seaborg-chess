@@ -237,7 +237,7 @@ def main():
     seen = 0
     # accumulate metrics on-GPU; only sync (.item()) at log time to avoid a CPU<->GPU
     # stall on every step (which would stop the CPU queuing the next step's kernels)
-    running = {k: torch.zeros((), device=device) for k in ("loss", "policy", "wdl", "value", "acc")}
+    running = {k: torch.zeros((), device=device) for k in ("loss", "policy", "wdl", "value", "z", "acc")}
     log_n = 0
     n_skipped = 0  # optimizer steps skipped due to non-finite gradients
     best_acc = 0.0  # best val accuracy seen -> chessformer_best.pt (survives a later divergence)
@@ -253,7 +253,7 @@ def main():
                 loss = loss / args.grad_accum
             scaler.scale(loss).backward()
             seen += batch["features"].size(0)
-            for k in ("loss", "policy", "wdl", "value"):
+            for k in ("loss", "policy", "wdl", "value", "z"):
                 running[k] += comp[k]
             running["acc"] += acc_fn(pol, batch)
             log_n += 1
@@ -282,7 +282,7 @@ def main():
             mem = torch.cuda.max_memory_allocated() / 1e9 if device.type == "cuda" else 0
             print(
                 f"step {step:>7} | loss {avg['loss']:.4f} "
-                f"(pol {avg['policy']:.4f} wdl {avg['wdl']:.4f} val {avg['value']:.4f}) "
+                f"(pol {avg['policy']:.4f} wdl {avg['wdl']:.4f} val {avg['value']:.4f} z {avg['z']:.4f}) "
                 f"| acc {avg['acc']*100:5.2f}% | lr {sched.get_last_lr()[0]:.2e} "
                 f"| {rate:6.0f} pos/s | {mem:.2f}GB",
                 flush=True,

@@ -20,6 +20,16 @@ class LossWeights:
     value: float = 1.0
 
 
+# z-loss on the policy logits: penalizes log-sum-exp^2 to stop output-logit growth (the
+# 100M divergence). Negligible normally; a strong restoring force once logits start blowing
+# up. logsumexp ignores the -inf illegal-move entries, so it's over the legal moves only.
+POLICY_Z_COEF = 1e-3
+
+
+def policy_z_loss(policy_logits):
+    return POLICY_Z_COEF * torch.logsumexp(policy_logits, dim=-1).pow(2).mean()
+
+
 def chessformer_loss(policy_logits, wdl_logits, value, batch, weights: LossWeights):
     """Return (total_loss, components_dict). `batch` provides the targets."""
     # policy: hard cross-entropy over the (masked) 4096 move classes
@@ -32,12 +42,14 @@ def chessformer_loss(policy_logits, wdl_logits, value, batch, weights: LossWeigh
     # scalar value: MSE against expected score q
     value_loss = F.mse_loss(value.float(), batch["value_target"].float())  # avoid float64 target
 
-    total = weights.policy * policy_loss + weights.wdl * wdl_loss + weights.value * value_loss
+    z_loss = policy_z_loss(policy_logits)  # keep policy logits from blowing up
+    total = weights.policy * policy_loss + weights.wdl * wdl_loss + weights.value * value_loss + z_loss
     return total, {
         "loss": total.detach(),
         "policy": policy_loss.detach(),
         "wdl": wdl_loss.detach(),
         "value": value_loss.detach(),
+        "z": z_loss.detach(),
     }
 
 
@@ -68,12 +80,14 @@ def chessformer_soft_loss(policy_logits, wdl_logits, value, batch, weights: Loss
     log_p = F.log_softmax(wdl_logits, dim=-1)
     wdl_loss = -(batch["wdl_target"] * log_p).sum(dim=-1).mean()
     value_loss = F.mse_loss(value.float(), batch["value_target"].float())  # avoid float64 target
-    total = weights.policy * policy_loss + weights.wdl * wdl_loss + weights.value * value_loss
+    z_loss = policy_z_loss(policy_logits)  # keep policy logits from blowing up
+    total = weights.policy * policy_loss + weights.wdl * wdl_loss + weights.value * value_loss + z_loss
     return total, {
         "loss": total.detach(),
         "policy": policy_loss.detach(),
         "wdl": wdl_loss.detach(),
         "value": value_loss.detach(),
+        "z": z_loss.detach(),
     }
 
 
