@@ -37,6 +37,38 @@ def parse_position(line: str) -> chess.Board:
     return board
 
 
+def parse_go(line: str) -> dict:
+    """Pull the clock fields out of a UCI `go` command."""
+    t = line.split()
+    g = {"infinite": "infinite" in t}
+    for key in ("wtime", "btime", "winc", "binc", "movestogo", "movetime", "depth"):
+        if key in t:
+            try:
+                g[key] = int(t[t.index(key) + 1])
+            except (ValueError, IndexError):
+                pass
+    return g
+
+
+def compute_budget(go: dict, board: chess.Board, overhead_ms: int = 100) -> float | None:
+    """Per-move time budget in seconds, or None if no clock info (-> use fixed depth).
+
+    Simple, robust scheme: spend remaining/movestogo plus 80% of the increment, but never
+    more than 40% of the clock on a single move, and always keep an overhead margin so we
+    don't flag on transmission latency."""
+    if "movetime" in go:
+        return max(0.01, (go["movetime"] - overhead_ms) / 1000.0)
+    key = "wtime" if board.turn == chess.WHITE else "btime"
+    if key not in go:
+        return None
+    remaining = go[key]
+    inc = go.get("winc" if board.turn == chess.WHITE else "binc", 0)
+    mtg = max(1, min(go.get("movestogo", 30), 40))   # assume ~30 moves left if not told
+    budget = remaining / mtg + 0.8 * inc
+    budget = min(budget, 0.4 * remaining)            # never blow the clock on one move
+    return max(0.02, (budget - overhead_ms) / 1000.0)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", default="checkpoints/chessformer_latest.pt")
@@ -94,15 +126,26 @@ def main():
         elif line.startswith("go"):
             if engine is None:
                 engine = ChessFormerEngine(args.checkpoint, device=args.device)
-            res = engine.select_move(board, mode=mode, temperature=temperature,
-                                     depth=depth, width=width, qdepth=qdepth)
+            go = parse_go(line)
+            kw = dict(mode=mode, temperature=temperature, width=width, qdepth=qdepth)
+            if mode == "search" and "depth" in go:
+                kw["depth"] = go["depth"]                       # GUI asked for a fixed depth
+            elif mode == "search" and not go["infinite"]:
+                budget = compute_budget(go, board)
+                if budget is not None:
+                    kw["movetime"] = budget                    # iterative deepening to budget
+                else:
+                    kw["depth"] = depth                         # no clock -> configured depth
+            else:
+                kw["depth"] = depth
+            res = engine.select_move(board, **kw)
             mv = res["move"]
             if mv is None:
                 out("bestmove (none)")
             else:
                 cp = res.get("cp")
                 if cp is not None:
-                    shown_depth = depth if mode == "search" else 1
+                    shown_depth = res.get("depth", 1)
                     out(f"info depth {shown_depth} score cp {cp} pv {mv.uci()}")
                 out(f"bestmove {mv.uci()}")
         elif line == "quit":

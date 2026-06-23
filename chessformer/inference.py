@@ -15,9 +15,14 @@ the chosen move back into the real frame.
 from __future__ import annotations
 
 import math
+import time
 from typing import List, Optional
 
 import chess
+
+
+class _TimeUp(Exception):
+    """Raised to unwind an in-progress search iteration once the deadline passes."""
 import numpy as np
 import torch
 
@@ -85,12 +90,15 @@ class ChessFormerEngine:
     @torch.no_grad()
     def select_move(self, board: chess.Board, mode: str = "policy",
                     temperature: float = 0.0, depth: int = 3, width: int = 4,
-                    qdepth: int = 6) -> dict:
+                    qdepth: int = 6, movetime: Optional[float] = None,
+                    max_depth: int = 12) -> dict:
         if not list(board.legal_moves):
             return {"move": None, "cp": None, "info": "no legal moves"}
         if mode == "value":
             return self._select_value(board)
         if mode == "search":
+            if movetime is not None:
+                return self._select_search_timed(board, width, qdepth, movetime, max_depth)
             return self._select_search(board, depth, width, qdepth)
         return self._select_policy(board, temperature)
 
@@ -169,10 +177,12 @@ class ChessFormerEngine:
         return [mv for _, mv in scored]
 
     @torch.no_grad()
-    def _qsearch(self, board, alpha, beta, qdepth):
+    def _qsearch(self, board, alpha, beta, qdepth, deadline=None):
         """Quiescence: extend only forcing lines (captures; all evasions when in check)
         until quiet, so the value head is evaluated on settled positions — fixes the
         horizon effect where the main search stops mid-capture-sequence."""
+        if deadline is not None and time.monotonic() > deadline:
+            raise _TimeUp
         if board.is_checkmate():
             return -1.0
         if not any(board.legal_moves) or board.is_insufficient_material():
@@ -193,7 +203,7 @@ class ChessFormerEngine:
             best = stand_pat
         for mv in moves:
             board.push(mv)
-            score = -self._qsearch(board, -beta, -alpha, qdepth - 1)
+            score = -self._qsearch(board, -beta, -alpha, qdepth - 1, deadline)
             board.pop()
             best = max(best, score)
             alpha = max(alpha, best)
@@ -202,7 +212,9 @@ class ChessFormerEngine:
         return best
 
     @torch.no_grad()
-    def _negamax(self, board, depth, alpha, beta, width, qdepth):
+    def _negamax(self, board, depth, alpha, beta, width, qdepth, deadline=None):
+        if deadline is not None and time.monotonic() > deadline:
+            raise _TimeUp
         if board.is_checkmate():
             return -1.0                       # side to move is mated
         if not any(board.legal_moves) or board.is_insufficient_material():
@@ -216,13 +228,13 @@ class ChessFormerEngine:
         if board.is_repetition(2) or board.halfmove_clock >= 100:
             return 0.0
         if depth <= 0:
-            return self._qsearch(board, alpha, beta, qdepth)   # leaf -> quiescence
+            return self._qsearch(board, alpha, beta, qdepth, deadline)   # leaf -> quiescence
         policy_logits, _, _ = self._forward([board], with_mask=True)
         pol = policy_logits[0].float().cpu().numpy()
         best = -math.inf
         for mv in self._ordered_moves(board, pol, width):
             board.push(mv)
-            score = -self._negamax(board, depth - 1, -beta, -alpha, width, qdepth)
+            score = -self._negamax(board, depth - 1, -beta, -alpha, width, qdepth, deadline)
             board.pop()
             best = max(best, score)
             alpha = max(alpha, best)
@@ -231,14 +243,16 @@ class ChessFormerEngine:
         return best
 
     @torch.no_grad()
-    def _select_search(self, board, depth, width, qdepth):
-        policy_logits, _, _ = self._forward([board], with_mask=True)
-        pol = policy_logits[0].float().cpu().numpy()
+    def _select_search(self, board, depth, width, qdepth, deadline=None, root_order=None):
+        if root_order is None:
+            policy_logits, _, _ = self._forward([board], with_mask=True)
+            pol = policy_logits[0].float().cpu().numpy()
+            root_order = self._ordered_moves(board, pol, width)
         best_score, best_move = -math.inf, None
         alpha = -math.inf
-        for mv in self._ordered_moves(board, pol, width):
+        for mv in root_order:
             board.push(mv)
-            score = -self._negamax(board, depth - 1, -math.inf, -alpha, width, qdepth)
+            score = -self._negamax(board, depth - 1, -math.inf, -alpha, width, qdepth, deadline)
             board.pop()
             if score > best_score:
                 best_score, best_move = score, mv
@@ -246,4 +260,37 @@ class ChessFormerEngine:
         if best_move is None:
             best_move = next(iter(board.legal_moves))
         cp = q_to_cp(best_score) if math.isfinite(best_score) else 0
-        return {"move": best_move, "cp": cp, "info": f"search d{depth} w{width} q{qdepth}"}
+        return {"move": best_move, "cp": cp, "depth": depth,
+                "info": f"search d{depth} w{width} q{qdepth}"}
+
+    @torch.no_grad()
+    def _select_search_timed(self, board, width, qdepth, budget_s, max_depth):
+        """Iterative deepening under a wall-clock budget: search depth 1, 2, 3, ... and
+        keep the best move from the last *fully completed* depth. A deadline aborts any
+        iteration that would overrun (the partial result is discarded). Depth 1 always
+        runs so we never fail to return a legal move."""
+        start = time.monotonic()
+        deadline = start + budget_s
+        # root move ordering from the policy head — reused across iterations (it's the same
+        # position) so we pay for the root forward pass once, not per depth.
+        policy_logits, _, _ = self._forward([board], with_mask=True)
+        pol = policy_logits[0].float().cpu().numpy()
+        root_order = self._ordered_moves(board, pol, width)
+
+        best = self._select_search(board, 1, width, qdepth, root_order=root_order)
+        reached = 1
+        for d in range(2, max_depth + 1):
+            # iterations grow super-linearly; if we've already burned a big slice of the
+            # budget, the next (deeper) one almost certainly won't finish — don't start it.
+            if time.monotonic() - start > budget_s * 0.5:
+                break
+            try:
+                res = self._select_search(board, d, width, qdepth,
+                                          deadline=deadline, root_order=root_order)
+            except _TimeUp:
+                break
+            best, reached = res, d
+        elapsed = time.monotonic() - start
+        best["depth"] = reached
+        best["info"] = f"id{reached} w{width} q{qdepth} {elapsed*1000:.0f}ms"
+        return best
