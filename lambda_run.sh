@@ -69,7 +69,8 @@ echo "[$(date +%T)] === [3/3] launching training in tmux ==="
 
 # --- 3. launch training in tmux ---
 LOG=train_cf100m.log
-tmux new-session -d -s train "source venv/bin/activate && \
+# force a terminfo entry tmux always has (some terminals, e.g. Ghostty, aren't on the box)
+TERM=xterm-256color tmux new-session -d -s train "source venv/bin/activate && \
   python train.py --preset cf100m --arch transformer --soft-policy \
     --precision bf16 --compile \
     --data-dir $DATA_DIR --val-mode column \
