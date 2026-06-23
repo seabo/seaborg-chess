@@ -30,7 +30,7 @@ def chessformer_loss(policy_logits, wdl_logits, value, batch, weights: LossWeigh
     wdl_loss = -(batch["wdl_target"] * log_p).sum(dim=-1).mean()
 
     # scalar value: MSE against expected score q
-    value_loss = F.mse_loss(value, batch["value_target"])
+    value_loss = F.mse_loss(value.float(), batch["value_target"].float())  # avoid float64 target
 
     total = weights.policy * policy_loss + weights.wdl * wdl_loss + weights.value * value_loss
     return total, {
@@ -67,7 +67,7 @@ def chessformer_soft_loss(policy_logits, wdl_logits, value, batch, weights: Loss
     policy_loss = soft_policy_ce(policy_logits, batch["soft_target"])
     log_p = F.log_softmax(wdl_logits, dim=-1)
     wdl_loss = -(batch["wdl_target"] * log_p).sum(dim=-1).mean()
-    value_loss = F.mse_loss(value, batch["value_target"])
+    value_loss = F.mse_loss(value.float(), batch["value_target"].float())  # avoid float64 target
     total = weights.policy * policy_loss + weights.wdl * wdl_loss + weights.value * value_loss
     return total, {
         "loss": total.detach(),
