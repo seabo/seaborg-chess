@@ -240,6 +240,7 @@ def main():
     running = {k: torch.zeros((), device=device) for k in ("loss", "policy", "wdl", "value", "acc")}
     log_n = 0
     n_skipped = 0  # optimizer steps skipped due to non-finite gradients
+    best_acc = 0.0  # best val accuracy seen -> chessformer_best.pt (survives a later divergence)
 
     for step in range(start_step, args.steps):
         opt.zero_grad(set_to_none=True)
@@ -259,19 +260,20 @@ def main():
 
         scaler.unscale_(opt)
         gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-        if torch.isfinite(gnorm):
+        if scaler.is_enabled():
+            # fp16: GradScaler skips on inf/nan and adjusts the loss scale automatically
             prev_scale = scaler.get_scale()
             scaler.step(opt)
             scaler.update()
-            # advance LR only if the optimizer actually stepped (fp16 scaler skips on inf)
             if scaler.get_scale() >= prev_scale:
                 sched.step()
+        elif torch.isfinite(gnorm):
+            # bf16/fp32: no scaler — step only when grads are finite
+            opt.step()
+            sched.step()
         else:
-            # non-finite gradients: under bf16 there's no GradScaler to catch these, so
-            # skip the update — one bad step can't be allowed to corrupt the weights
-            scaler.update()
             n_skipped += 1
-            print(f"  [warn] step {step}: non-finite grad norm, step skipped (total skipped {n_skipped})", flush=True)
+            print(f"  [warn] step {step}: non-finite grad, skipped (total {n_skipped})", flush=True)
 
         if step % args.log_interval == 0 and log_n > 0:
             dt = time.time() - t0
@@ -298,6 +300,9 @@ def main():
                 f"| acc {v['acc']*100:5.2f}%",
                 flush=True,
             )
+            if v["acc"] > best_acc:
+                best_acc = v["acc"]
+                save(model, opt, sched, scaler, step, config, args.out_dir, "best", args.arch)
             t0 = time.time()  # don't count eval time against throughput
 
         if step > start_step and step % args.save_interval == 0:
