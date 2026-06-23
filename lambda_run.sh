@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Turn-key ~100M training run on a fresh Lambda 1x H100 instance.
 #
-# PREREQ — copy this repo onto the instance first (from your local machine):
-#   rsync -av --exclude venv --exclude data --exclude checkpoints --exclude lichess-bot \
-#       ./ ubuntu@<LAMBDA_IP>:~/chess-gpt/
-# then SSH in and run from ~/chess-gpt:   bash lambda_run.sh
+# PREREQ — get this repo onto the instance, then run from its root:
+#   git clone <your-repo-url> chess-gpt && cd chess-gpt && bash lambda_run.sh
+# (private repo: clone over HTTPS with a PAT, or add a deploy key. data/ + checkpoints/
+#  are gitignored and rebuilt/written on the box — or mounted from a Lambda Filesystem.)
 #
 # Optional (faster dataset download): export HF_TOKEN=hf_xxx before running.
 # Tunables:  STEPS=... BATCH=... LR=... WORKERS=...  bash lambda_run.sh
