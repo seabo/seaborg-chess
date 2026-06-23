@@ -15,11 +15,21 @@ STEPS=${STEPS:-200000}      # ~0.5 epoch ceiling; WATCH val acc and stop early o
 BATCH=${BATCH:-1024}        # H100/80GB; drop to 512 if the attention transient OOMs
 LR=${LR:-6e-4}
 WORKERS=${WORKERS:-16}
-# Point these at a mounted Lambda Filesystem (e.g. /home/ubuntu/cf-fs/...) to persist the
-# dataset + checkpoints across instance termination and skip data prep on future runs.
-RAW_DIR=${RAW_DIR:-data/lichess-evals}
-DATA_DIR=${DATA_DIR:-data/action-values-raw}
-OUT_DIR=${OUT_DIR:-checkpoints/cf100m}
+# Set CF_FS to a mounted Lambda Filesystem (e.g. CF_FS=/home/ubuntu/<fs-name>) to keep the
+# dataset AND checkpoints on persistent storage — they survive instance termination, and a
+# re-run skips the data build. Without CF_FS, everything goes to the instance-local SSD.
+CF_FS=${CF_FS:-}
+if [ -n "$CF_FS" ]; then
+  [ -d "$CF_FS" ] || { echo "ERROR: CF_FS=$CF_FS does not exist — is the filesystem attached/mounted?"; exit 1; }
+  RAW_DIR=${RAW_DIR:-$CF_FS/lichess-evals}
+  DATA_DIR=${DATA_DIR:-$CF_FS/action-values-raw}
+  OUT_DIR=${OUT_DIR:-$CF_FS/cf100m}
+  echo "using persistent filesystem at $CF_FS"
+else
+  RAW_DIR=${RAW_DIR:-data/lichess-evals}
+  DATA_DIR=${DATA_DIR:-data/action-values-raw}
+  OUT_DIR=${OUT_DIR:-checkpoints/cf100m}
+fi
 
 echo "=== GPU ==="; nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 echo "=== disk ==="; df -h . | tail -1
@@ -58,7 +68,7 @@ cat <<EOF
 Training launched in tmux session 'train'.
   attach:       tmux attach -t train        (detach again with: Ctrl-b then d)
   watch log:    tail -f $LOG
-  checkpoints:  checkpoints/cf100m/chessformer_latest.pt  (every 2000 steps)
+  checkpoints:  $OUT_DIR/chessformer_latest.pt  (written every 2000 steps)
 
 *** COST REMINDER ***
 This H100 bills ~\$4.29/hr for as long as the instance EXISTS.
